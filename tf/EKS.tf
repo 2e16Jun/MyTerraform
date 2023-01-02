@@ -5,7 +5,7 @@ module "eks" {
   cluster_name    = "my-cluster"
   cluster_version = "1.24"
 
-  cluster_endpoint_public_access  = true
+  cluster_endpoint_public_access = true
 
   cluster_addons = {
     coredns = {
@@ -35,7 +35,7 @@ module "eks" {
   self_managed_node_groups = {
     one = {
       name         = "mixed-1"
-      max_size     = 6
+      max_size     = 5
       desired_size = 2
 
       use_mixed_instances_policy = true
@@ -114,7 +114,8 @@ module "eks" {
   ]
 
   aws_auth_accounts = [
-    "777777777777", # 수정
+    "777777777777",
+    "888888888888",
   ]
 
   tags = {
