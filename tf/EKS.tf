@@ -1,125 +1,155 @@
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
+# locals {
+#   required_tags = {
+#     project     = var.project_name,
+#     environment = var.environment
+#   }
+#   tags = merge(var.resource_tags, local.required_tags)
+# }
 
-  cluster_name    = "my-cluster"
+provider "aws" {
+  region = local.region
+}
+
+data "aws_availability_zones" "available" {}
+
+locals {
+  name            = "ex-${replace(basename(path.cwd), "_", "-")}"
   cluster_version = "1.24"
+  region          = var.region
 
+  vpc_cidr = var.vpc_cidr_block
+  azs      = slice(data.aws_availability_zones.available.names, 0, 3)
+
+  tags = {
+    tag    = local.name
+  }
+}
+
+################################################################################
+# EKS Module
+################################################################################
+
+module "eks" {
+  source = 
+
+  cluster_name                   = local.name
+  cluster_version                = local.cluster_version
   cluster_endpoint_public_access = true
 
   cluster_addons = {
+    kube-proxy = {}
+    vpc-cni    = {}
     coredns = {
-      most_recent = true
-    }
-    kube-proxy = {
-      most_recent = true
-    }
-    vpc-cni = {
-      most_recent = true
+      configuration_values = jsonencode({
+        computeType = "Fargate"
+      })
     }
   }
 
-  vpc_id                   = ""
-  subnet_ids               = ["", "", ""]
-  control_plane_subnet_ids = ["", "", ""]
+  vpc_id                   = module.vpc.vpc_id
+  subnet_ids               = module.vpc.private_subnets
+  control_plane_subnet_ids = module.vpc.intra_subnets
 
-  # Self Managed Node Group(s)
-  self_managed_node_group_defaults = {
-    instance_type                          = "m6i.large"
-    update_launch_template_default_version = true
+  # Fargate profiles use the cluster primary security group so these are not utilized
+  create_cluster_security_group = false
+  create_node_security_group    = false
+
+  fargate_profile_defaults = {
     iam_role_additional_policies = {
-      AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      additional = aws_iam_policy.additional.arn
     }
   }
 
-  self_managed_node_groups = {
-    one = {
-      name         = "mixed-1"
-      max_size     = 5
-      desired_size = 2
-
-      use_mixed_instances_policy = true
-      mixed_instances_policy = {
-        instances_distribution = {
-          on_demand_base_capacity                  = 0
-          on_demand_percentage_above_base_capacity = 10
-          spot_allocation_strategy                 = "capacity-optimized"
-        }
-
-        override = [
-          {
-            instance_type     = "m5.large"
-            weighted_capacity = "1"
-          },
-          {
-            instance_type     = "m6i.large"
-            weighted_capacity = "2"
-          },
-        ]
-      }
-    }
-  }
-
-  # EKS Managed Node Group(s)
-  eks_managed_node_group_defaults = {
-    instance_types = ["m6i.large", "m5.large", "m5n.large", "m5zn.large"]
-  }
-
-  eks_managed_node_groups = {
-    blue = {}
-    green = {
-      min_size     = 1
-      max_size     = 10
-      desired_size = 1
-
-      instance_types = ["t3.large"]
-      capacity_type  = "SPOT"
-    }
-  }
-
-  # Fargate Profile(s)
   fargate_profiles = {
-    default = {
-      name = "default"
+    example = {
+      name = "example"
       selectors = [
         {
-          namespace = "default"
+          namespace = "backend"
+          labels = {
+            Application = "backend"
+          }
+        },
+        {
+          namespace = "app-*"
+          labels = {
+            Application = "app-wildcard"
+          }
         }
+      ]
+
+      # Using specific subnets instead of the subnets supplied for the cluster itself
+      subnet_ids = [module.vpc.private_subnets[1]]
+
+      tags = {
+        Owner = "secondary"
+      }
+
+      timeouts = {
+        create = "20m"
+        delete = "20m"
+      }
+    }
+
+    kube_system = {
+      name = "kube-system"
+      selectors = [
+        { namespace = "kube-system" }
       ]
     }
   }
 
-  # aws-auth configmap
-  manage_aws_auth_configmap = true
+  tags = local.tags
+}
 
-  aws_auth_roles = [
-    {
-      rolearn  = "arn:aws:iam::66666666666:role/role1"
-      username = "role1"
-      groups   = ["system:masters"]
-    },
-  ]
+################################################################################
+# Supporting Resources
+################################################################################
 
-  aws_auth_users = [
-    {
-      userarn  = "arn:aws:iam::66666666666:user/user1"
-      username = "user1"
-      groups   = ["system:masters"]
-    },
-    {
-      userarn  = "arn:aws:iam::66666666666:user/user2"
-      username = "user2"
-      groups   = ["system:masters"]
-    },
-  ]
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 3.0"
 
-  aws_auth_accounts = [
-    "777777777777",
-    "888888888888",
-  ]
+  name = local.name
+  cidr = local.vpc_cidr
 
-  tags = {
-    Environment = "dev"
-    Terraform   = "true"
+  azs             = local.azs
+  private_subnets = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 4, k)]
+  public_subnets  = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 48)]
+  intra_subnets   = [for k, v in local.azs : cidrsubnet(local.vpc_cidr, 8, k + 52)]
+
+  enable_nat_gateway   = true
+  single_nat_gateway   = true
+  enable_dns_hostnames = true
+
+  enable_flow_log                      = true
+  create_flow_log_cloudwatch_iam_role  = true
+  create_flow_log_cloudwatch_log_group = true
+
+  public_subnet_tags = {
+    "kubernetes.io/role/elb" = 1
   }
+
+  private_subnet_tags = {
+    "kubernetes.io/role/internal-elb" = 1
+  }
+
+  tags = local.tags
+}
+
+resource "aws_iam_policy" "additional" {
+  name = "${local.name}-additional"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ec2:Describe*",
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      },
+    ]
+  })
 }

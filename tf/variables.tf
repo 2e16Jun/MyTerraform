@@ -1,3 +1,21 @@
+variable "project_name" {
+  description = "Name of the project."
+  type        = string
+  default     = "my-project"
+}
+
+variable "environment" {
+  description = "Name of the environment."
+  type        = string
+  default     = "dev"
+}
+
+ variable "resource_tags" {
+   description = "Tags to set for all resources"
+   type        = map(string)
+   default     = {}
+ }
+
 variable "aws_region" {
   description = "AWS region"
   type        = string
@@ -12,6 +30,11 @@ variable "aws_amis" {
     ap-northeast-2 = "ami-035233c9da2fabf52" # Amazon Linux 2 Kernel 5.10 AMI 2.0.20221210.1 x86_64 HVM gp2
   }
 }
+
+############################################################
+# VPC Module
+# https://github.com/terraform-aws-modules/terraform-aws-vpc
+############################################################
 
 variable "vpc_cidr_block" {
   description = "CIDR block for VPC"
@@ -44,6 +67,11 @@ variable "private_subnet_db_count" {
   description = "Number of private subnets for db."
   type        = number
   default     = 2
+
+  validation {
+    condition     = var.private_subnet_db_count <= 8
+    error_message = "private_subnet not enough"
+  }
 }
 
 variable "public_subnets" {
@@ -99,5 +127,3 @@ variable "vpc_tags" {
     Environment = "deploy"
   }
 }
-
-#https://github.com/terraform-aws-modules/terraform-aws-vpc
